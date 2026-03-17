@@ -21,7 +21,7 @@
 // 定义一个有 2 个参数的系统调用
 // 参数 1: 目标进程的 PID
 // 参数 2: 用户态的一个 int 指针，用来接收结果
-SYSCALL_DEFINE2(get_process_runtime, pid_t, target_pid, int __user *, user_result) {
+SYSCALL_DEFINE2(syscall_customize, pid_t, target_pid, int __user *, user_result) {
     struct task_struct *task;
     int runtime_seconds;
     task = find_get_task_by_vpid(target_pid);
