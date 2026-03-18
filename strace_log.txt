@@ -1,0 +1,20 @@
+04:39:38.829183 syscall_0x1c1(0xf423f, 0x7ffed08cac60, 0x7f4a09e88297, 0x1f, 0x7c, 0x7ffed08cac60) = -1 ESRCH (No such process) <0.000004>
+04:39:38.829828 syscall_0x1c1(0xa45, 0x7ffed08cac08, 0x7f4a09e571b4, 0, 0x1, 0x7ffed08cac08) = 0 <0.000016>
+04:39:48.830680 syscall_0x1c1(0xa45, 0x7ffed08cac08, 0x7f4a09e571b4, 0, 0x1, 0x7ffed08cac08) = 0 <0.000010>
+04:39:48.838734 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=2632, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+04:39:48.838912 +++ exited with 0 +++
+
+
+# 上面是只跟踪syscall_customize（449号调用）的strace日志。
+“04:39:38.829183”这个格式的是时间戳
+“syscall_0x1c1”就是触发了 449 号自定义系统调用
+第一行的 0xf423f 是第一个参数999999，即测试的无效 PID
+0x7ffed08cac60 是第二个参数用户态指针地址，对应代码里的&dummy_us，用来接收结果
+0x7f4a09e88297...第 3-6 个参数是x86_64 架构默认填充的无关值，没什么关系
+= -1	系统调用返回值 =-1，调用失败
+ESRCH (No such process)	失败原因：无此进程
+<0.000004>	调用耗时 4 微秒（内核快速判断 PID 无效，立即返回）
+
+后面类似，= 0 就是调用成功了
+SIGCHLD那一行是创建的子进程执行完ps后正常退出发送的信号
+最后一行是正常退出，退出码为0，程序无崩溃和异常
