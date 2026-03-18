@@ -82,8 +82,105 @@ SYSCALL_DEFINE2(syscall_customize, pid_t, target_pid, int __user *, user_result)
 
 编译完安装，用测试文件测试即可。
 
-四、打包上传
+### 四、打包上传
 
 打包为deb文件
 
+### 五、测试
 
+最开始试着用simple_test.c测试，但是输出有问题
+```
+在测试系统调用号: 449
+系统调用已响应，但返回了错误码：3
+```
+看上去像颜文字一样（...）
+这是因为自定义系统调用要求传 pid_t pid + uint64_t *runtime_us，但是这段测试代码只传了调用号、没传参数（syscall(MY_SYSCALL_NUM)），内核拿到的 PID 是大概率无效的随机值，因此返回错误码 3（ESRCH = 无此进程）。
+
+好的！接下来我又写了一段测试程序：
+```c
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <errno.h>
+#include <stdlib.h>
+
+#define __NR_syscall_customize 449  
+
+long syscall_customize(pid_t pid, int *runtime) {
+    return syscall(__NR_syscall_customize, pid, runtime);
+}
+
+int main() {
+    int ret, runtime;
+    pid_t self_pid = getpid();  
+    pid_t invalid_pid = 999999; 
+
+    // 获取当前进程运行时间
+    printf("===== 正常测试 =====\n");
+    ret = syscall_customize(self_pid, &runtime);
+    if (ret == 0) {
+        printf("当前进程PID：%d\n", self_pid);
+        printf("自定义系统调用返回运行时间：%d 秒\n", runtime);
+    } else {
+        printf("正常测试失败！返回值：%d，错误码：%d\n", ret, errno);
+    }
+
+    printf("\n===== 异常测试 =====\n");
+    ret = syscall_customize(invalid_pid, &runtime);
+    printf("无效PID(%d)测试：返回值=%d，错误码=%d（预期非0）\n", invalid_pid, ret, errno);
+
+    // 对比系统命令结果
+    printf("\n===== 结果对比 =====\n");
+    char cmd[100];
+    sprintf(cmd, "ps -o etimes= -p %d", self_pid);
+    FILE *fp = popen(cmd, "r");
+    int ps_runtime;
+    fscanf(fp, "%d", &ps_runtime);
+    pclose(fp);
+    printf("系统ps命令统计的运行时间：%d 秒\n", ps_runtime);
+    printf("时间误差：%d 秒（≤1秒即正常）\n", abs(ps_runtime - runtime));
+
+    return 0;
+}
+```
+
+结果是：
+```
+===== 正常测试 =====
+当前进程PID：2592
+自定义系统调用返回运行时间：0 秒
+
+===== 异常测试 =====
+无效PID(999999)测试：返回值=-1，错误码=3（预期非0）
+
+===== 结果对比 =====
+系统ps命令统计的运行时间：0 秒
+时间误差：0 秒（≤1秒即正常）
+```
+这下能看到系统调用应该是成功运行了，但是这里显示的都是0秒，太不精确，怎么回事呢？原来是系统调用中定义运行时间时使用的是int整型（int runtime_seconds;），这样我们就没办法测较短进程的运行时间了。
+我们接下来把代码改成微秒级的：
+```
+u64 runtime_us;
+```
+其他地方也根据PRIu64修改。测试一下发现没什么问题之后，我决定试一试不同时长复杂一点的进程，修改了一下代码再做测试：
+```
+===== 基础异常测试 =====
+无效PID(999999)测试：返回值=-1，错误码=3（预期非0）
+
+===== 短时长场景（等待0秒）=====
+进程PID：3288
+自定义系统调用返回：159 微秒（0.000 秒）
+系统时钟计算：157891 微秒（0.158 秒）
+时间误差：157732 微秒...
+===== 长时长场景（等待10秒）=====
+进程PID：3288
+自定义系统调用返回：13577 微秒（0.014 秒）
+系统时钟计算：13373430 微秒（13.373 秒）
+时间误差：13359853 微秒...
+===== 系统命令对比=====
+ps命令高精度统计：14.140 秒
+```
+等等？！之前测0秒的时候看不出来，我们自己写的系统调用计算的时间怎么比真实的短了这么多？这不对劲————
+原来是因为我们写的系统调用计算的进程用时是 task->start_time（进程创建时间）到当前的时间差，但task->start_time不是进程 “启动时间”，而是线程创建时间。内核中 syscall() 调用可能触发轻量级线程创建，导致 start_time 是 “系统调用执行时的线程时间”，而非进程启动时间。我们的系统调用返回值其实是当前线程的运行时间，不是整个进程的运行时间。我们要从task->group_leader->start_time 获取进程主线程的启动时间。
+
+先前的测试代码中误将「程序启动时间」当作「进程创建时间」，我们改成从 /proc/pid/stat 读取进程实际创建时间，而非 time(NULL)。
