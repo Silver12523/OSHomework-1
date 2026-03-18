@@ -177,13 +177,17 @@ u64 runtime_us;
 自定义系统调用返回：13577 微秒（0.014 秒）
 系统时钟计算：13373430 微秒（13.373 秒）
 时间误差：13359853 微秒...
-===== 系统命令对比=====
-ps命令高精度统计：14.140 秒
 ```
 等等？！之前测0秒的时候看不出来，我们自己写的系统调用计算的时间怎么比真实的短了这么多？这不对劲————
 原来是因为我们写的系统调用计算的进程用时是 task->start_time（进程创建时间）到当前的时间差，但task->start_time不是进程 “启动时间”，而是线程创建时间。内核中 syscall() 调用可能触发轻量级线程创建，导致 start_time 是 “系统调用执行时的线程时间”，而非进程启动时间。我们的系统调用返回值其实是当前线程的运行时间，不是整个进程的运行时间。我们要从task->group_leader->start_time 获取进程主线程的启动时间。
 
-先前的测试代码中误将「程序启动时间」当作「进程创建时间」，我们改成从 /proc/pid/stat 读取进程实际创建时间，而非 time(NULL)。
+先前的测试代码中误将「程序启动时间」当作「进程创建时间」，我们改成从 /proc/pid/stat 读取进程实际创建时间，而非 time(NULL)。Linux 系统会把所有进程的核心信息存在/proc文件系统中，其中/proc/[PID]/stat存储进程的详细状态，包含「进程启动时的系统节拍数（start_jiffies）」，而/proc/uptime存储系统启动到现在的总时长（uptime_sec）。我们读取进程的启动节拍和系统启动总时长，以此计算进程真实的创建时间。
+```c
+time_t now = time(NULL); // 当前时间
+// 当前时间 - 系统运行时长 + 进程启动时的系统运行时长
+time_t proc_start = now - (time_t)uptime_sec + (time_t)(start_jiffies / sysconf(_SC_CLK_TCK));
+```
+我们还引入了ps命令进行比对。ps 命令统计的是内核官方记录的进程从创建到当前的运行总秒数。这部分代码在test_syscall.c的“对比系统命令”的部分。
 
 改完的代码就是syscall_customize.c和test_syscall.c啦。
 
@@ -211,4 +215,5 @@ ps命令统计运行时间：10.000 秒（10000000 微秒）
 ```
 接下来使用strace跟踪测试。
 先使用命令strace -o test_syscall_full.log -tt -T -f ./test_syscall，结果出来的太长了，难以提取有效信息。（详见test_syscall_full.txt)
-筛选只和syscall_customize.c相关的，使用命令strace -o strace_log.txt -tt -T -e trace=449 ./test_syscall，出来的只有短短几行。具体内容和说明详见strace_log.txt。（这里对应的test_syscall输出就是上面PID=2629那个。
+
+筛选只和syscall_customize.c相关的，使用命令strace -o strace_log.txt -tt -T -e trace=449 ./test_syscall，出来的只有短短几行。具体内容和说明详见strace_log.txt。（这里对应的test_syscall输出就是上面PID=2629那个，写报告用这个就好了。
